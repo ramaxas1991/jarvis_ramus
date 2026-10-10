@@ -1,0 +1,743 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<script>
+(function(){
+  var _origFetch = window.fetch;
+  window.fetch = function(url, opts){
+    try {
+      if (typeof url === 'string' && !/^https?:\/\//i.test(url)) {
+        console.warn('[Saugiklis] Blokuotas vietinis fetch() i: ' + url + ' - grazinamas tuscias atsakymas, kad scenarijus tesetu veikti.');
+        return Promise.resolve(new Response('{}', {status:200, headers:{'Content-Type':'application/json'}}));
+      }
+    } catch(e) {}
+    return _origFetch.apply(this, arguments);
+  };
+})();
+(function(){
+  // PATAISYTA: THREE.TextureLoader viduje naudoja XMLHttpRequest (NE fetch),
+  // todel virsutinis fetch-saugiklis JO NEGAUDO. Sitas atskirai "uzlauzia"
+  // TextureLoader.load, kad vietiniu (neegzistuojanciu) tekstūru failu
+  // bandymas ikelti NESUSTABDYTU visos scenos render'inimo (matyta REALIAI -
+  // "MAX_TEXTURE_IMAGE_UNITS" / "useProgram: program not valid" klaidos,
+  // po kuriu VISKAS nustoja pieštis).
+  function patchThreeLoader(){
+    if (window.THREE && THREE.TextureLoader && !THREE.TextureLoader.prototype._saugiklisPatched) {
+      var _origLoad = THREE.TextureLoader.prototype.load;
+      THREE.TextureLoader.prototype.load = function(url, onLoad, onProgress, onError){
+        if (typeof url === 'string' && !/^https?:\/\//i.test(url)) {
+          console.warn('[Saugiklis] Blokuotas vietinis Three.js tekstūros ikelimas: ' + url);
+          var c = document.createElement('canvas'); c.width = 4; c.height = 4;
+          var ctx = c.getContext('2d'); ctx.fillStyle = '#888'; ctx.fillRect(0,0,4,4);
+          var tex = new THREE.CanvasTexture(c);
+          if (onLoad) setTimeout(function(){ onLoad(tex); }, 0);
+          return tex;
+        }
+        return _origLoad.apply(this, arguments);
+      };
+      THREE.TextureLoader.prototype._saugiklisPatched = true;
+    }
+  }
+  patchThreeLoader();
+  var _saugiklisTries = 0;
+  var _saugiklisInterval = setInterval(function(){
+    patchThreeLoader();
+    _saugiklisTries++;
+    if (_saugiklisTries > 50 || (window.THREE && THREE.TextureLoader && THREE.TextureLoader.prototype._saugiklisPatched)) {
+      clearInterval(_saugiklisInterval);
+    }
+  }, 50);
+})();
+</script>
+
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Jarvis Personal Assistant</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg-deep: #070b14;
+    --bg-panel: #0d1424;
+    --bg-panel-2: #111b30;
+    --accent: #4fd1ff;
+    --accent-2: #7c6bff;
+    --accent-soft: rgba(79,209,255,0.12);
+    --text-primary: #eaf2ff;
+    --text-secondary: #9fb0c9;
+    --border-soft: rgba(255,255,255,0.08);
+    --success: #4fe0b0;
+    --radius-lg: 20px;
+    --radius-md: 14px;
+    --radius-sm: 8px;
+  }
+
+  *{ box-sizing: border-box; margin:0; padding:0; }
+
+  html{ scroll-behavior: smooth; }
+
+  body{
+    background: var(--bg-deep);
+    color: var(--text-primary);
+    font-family: 'Inter', sans-serif;
+    line-height: 1.6;
+    overflow-x: hidden;
+    position: relative;
+    min-height: 100vh;
+  }
+
+  body::before{
+    content:"";
+    position: fixed;
+    inset: 0;
+    background:
+      radial-gradient(circle at 20% 10%, rgba(124,107,255,0.18), transparent 45%),
+      radial-gradient(circle at 85% 20%, rgba(79,209,255,0.14), transparent 40%),
+      radial-gradient(circle at 50% 90%, rgba(79,224,176,0.08), transparent 50%);
+    z-index: -2;
+    pointer-events: none;
+  }
+
+  body::after{
+    content:"";
+    position: fixed;
+    inset: 0;
+    background-image:
+      linear-gradient(rgba(255,255,255,0.025) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(255,255,255,0.025) 1px, transparent 1px);
+    background-size: 48px 48px;
+    z-index: -1;
+    pointer-events: none;
+    mask-image: radial-gradient(ellipse 80% 60% at 50% 20%, black 20%, transparent 75%);
+  }
+
+  h1,h2,h3{ font-family: 'Space Grotesk', sans-serif; }
+
+  .container{
+    max-width: 880px;
+    margin: 0 auto;
+    padding: 0 24px;
+  }
+
+  /* NAV */
+  header{
+    position: sticky;
+    top: 0;
+    z-index: 100;
+    backdrop-filter: blur(14px);
+    -webkit-backdrop-filter: blur(14px);
+    background: rgba(7,11,20,0.75);
+    border-bottom: 1px solid var(--border-soft);
+  }
+
+  nav{
+    max-width: 880px;
+    margin: 0 auto;
+    padding: 16px 24px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+
+  .brand{
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-weight: 700;
+    font-size: 1.15rem;
+    letter-spacing: 0.5px;
+  }
+
+  .brand-icon{
+    width: 34px;
+    height: 34px;
+    border-radius: 9px;
+    background: linear-gradient(135deg, var(--accent), var(--accent-2));
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 700;
+    color: #06101f;
+    font-size: 1rem;
+    box-shadow: 0 0 20px rgba(79,209,255,0.4);
+    flex-shrink: 0;
+  }
+
+  .nav-links{
+    display: flex;
+    gap: 28px;
+    list-style: none;
+  }
+
+  .nav-links a{
+    color: var(--text-secondary);
+    text-decoration: none;
+    font-size: 0.92rem;
+    font-weight: 500;
+    transition: color 0.25s ease;
+    position: relative;
+    padding: 6px 0;
+  }
+
+  .nav-links a::after{
+    content:"";
+    position: absolute;
+    left: 0; bottom: 0;
+    width: 0%;
+    height: 2px;
+    background: linear-gradient(90deg, var(--accent), var(--accent-2));
+    transition: width 0.3s ease;
+  }
+
+  .nav-links a:hover{ color: var(--text-primary); }
+  .nav-links a:hover::after{ width: 100%; }
+
+  .hamburger{
+    display: none;
+    flex-direction: column;
+    gap: 5px;
+    background: none;
+    border: none;
+    cursor: pointer;
+    padding: 10px;
+    min-width: 44px;
+    min-height: 44px;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .hamburger span{
+    width: 24px;
+    height: 2px;
+    background: var(--text-primary);
+    border-radius: 2px;
+    transition: all 0.3s ease;
+  }
+
+  .hamburger.active span:nth-child(1){ transform: translateY(7px) rotate(45deg); }
+  .hamburger.active span:nth-child(2){ opacity: 0; }
+  .hamburger.active span:nth-child(3){ transform: translateY(-7px) rotate(-45deg); }
+
+  /* HERO */
+  .hero{
+    padding: 100px 24px 70px;
+    text-align: center;
+  }
+
+  .badge{
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 16px;
+    border-radius: 999px;
+    background: var(--accent-soft);
+    border: 1px solid rgba(79,209,255,0.3);
+    color: var(--accent);
+    font-size: 0.8rem;
+    font-weight: 600;
+    letter-spacing: 0.5px;
+    margin-bottom: 28px;
+    opacity: 0;
+    animation: fadeUp 0.7s ease forwards;
+  }
+
+  .badge-dot{
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--success);
+    box-shadow: 0 0 10px var(--success);
+  }
+
+  .hero h1{
+    font-size: clamp(2.2rem, 6vw, 3.6rem);
+    font-weight: 700;
+    line-height: 1.12;
+    background: linear-gradient(135deg, #ffffff 20%, var(--accent) 60%, var(--accent-2) 100%);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+    margin-bottom: 20px;
+    opacity: 0;
+    animation: fadeUp 0.7s ease 0.1s forwards;
+  }
+
+  .hero p{
+    font-size: clamp(1rem, 2vw, 1.15rem);
+    color: var(--text-secondary);
+    max-width: 620px;
+    margin: 0 auto;
+    opacity: 0;
+    animation: fadeUp 0.7s ease 0.2s forwards;
+  }
+
+  .hero-actions{
+    margin-top: 36px;
+    display: flex;
+    gap: 16px;
+    justify-content: center;
+    flex-wrap: wrap;
+    opacity: 0;
+    animation: fadeUp 0.7s ease 0.3s forwards;
+  }
+
+  .btn{
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 13px 26px;
+    border-radius: 999px;
+    font-weight: 600;
+    font-size: 0.95rem;
+    text-decoration: none;
+    cursor: pointer;
+    border: 1px solid transparent;
+    transition: transform 0.25s ease, box-shadow 0.25s ease, background 0.25s ease;
+    min-height: 44px;
+  }
+
+  .btn-primary{
+    background: linear-gradient(135deg, var(--accent), var(--accent-2));
+    color: #06101f;
+    box-shadow: 0 8px 24px rgba(79,209,255,0.25);
+  }
+  .btn-primary:hover{ transform: translateY(-2px); box-shadow: 0 12px 30px rgba(79,209,255,0.4); }
+
+  .btn-ghost{
+    background: rgba(255,255,255,0.03);
+    border-color: var(--border-soft);
+    color: var(--text-primary);
+  }
+  .btn-ghost:hover{ background: rgba(255,255,255,0.07); transform: translateY(-2px); }
+
+  /* SECTIONS */
+  section.panel{
+    scroll-margin-top: 90px;
+    max-width: 880px;
+    margin: 0 auto 28px;
+    padding: 0 24px;
+  }
+
+  .card{
+    background: linear-gradient(165deg, var(--bg-panel), var(--bg-panel-2));
+    border: 1px solid var(--border-soft);
+    border-radius: var(--radius-lg);
+    padding: 44px 40px;
+    position: relative;
+    overflow: hidden;
+    opacity: 0;
+    transform: translateY(24px);
+    transition: opacity 0.7s ease, transform 0.7s ease;
+  }
+
+  .card.visible{ opacity: 1; transform: translateY(0); }
+
+  .card::before{
+    content:"";
+    position: absolute;
+    top: -40%;
+    right: -20%;
+    width: 320px;
+    height: 320px;
+    background: radial-gradient(circle, rgba(79,209,255,0.08), transparent 70%);
+    pointer-events: none;
+  }
+
+  .card-icon{
+    width: 46px;
+    height: 46px;
+    border-radius: 12px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 1.3rem;
+    margin-bottom: 20px;
+  }
+
+  .icon-user{ background: rgba(124,107,255,0.15); color: var(--accent-2); }
+  .icon-shield{ background: rgba(79,209,255,0.15); color: var(--accent); }
+  .icon-doc{ background: rgba(79,224,176,0.15); color: var(--success); }
+  .icon-info{ background: rgba(255,184,108,0.15); color: #ffb86c; }
+
+  .card h2{
+    font-size: clamp(1.4rem, 3vw, 1.8rem);
+    margin-bottom: 14px;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    flex-wrap: wrap;
+  }
+
+  .section-tag{
+    font-size: 0.7rem;
+    font-weight: 700;
+    letter-spacing: 1.2px;
+    text-transform: uppercase;
+    color: var(--text-secondary);
+    margin-bottom: 10px;
+    display: block;
+  }
+
+  .card p{
+    color: var(--text-secondary);
+    margin-bottom: 14px;
+    font-size: 0.98rem;
+  }
+
+  .card p:last-child{ margin-bottom: 0; }
+
+  .card ul{
+    color: var(--text-secondary);
+    margin: 16px 0;
+    padding-left: 0;
+    list-style: none;
+  }
+
+  .card ul li{
+    position: relative;
+    padding-left: 28px;
+    margin-bottom: 12px;
+    font-size: 0.97rem;
+  }
+
+  .card ul li::before{
+    content: "✓";
+    position: absolute;
+    left: 0;
+    top: 0;
+    color: var(--success);
+    font-weight: 700;
+  }
+
+  .highlight-box{
+    margin-top: 22px;
+    padding: 18px 20px;
+    border-radius: var(--radius-md);
+    background: rgba(79,224,176,0.08);
+    border: 1px solid rgba(79,224,176,0.25);
+    color: #cdeee2;
+    font-size: 0.92rem;
+    display: flex;
+    gap: 12px;
+    align-items: flex-start;
+  }
+
+  .highlight-box .dot{
+    flex-shrink: 0;
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    background: var(--success);
+    color: #06101f;
+    font-weight: 700;
+    font-size: 0.75rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin-top: 2px;
+  }
+
+  .divider-line{
+    height: 1px;
+    background: linear-gradient(90deg, transparent, var(--border-soft), transparent);
+    margin: 10px 0 26px;
+  }
+
+  .meta-row{
+    display: flex;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 10px;
+    font-size: 0.82rem;
+    color: var(--text-secondary);
+    margin-top: 28px;
+    padding-top: 20px;
+    border-top: 1px solid var(--border-soft);
+  }
+
+  .meta-row span strong{ color: var(--text-primary); }
+
+  .anchor-links{
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+    margin-top: 18px;
+  }
+
+  .pill-link{
+    font-size: 0.82rem;
+    color: var(--accent);
+    text-decoration: none;
+    padding: 8px 14px;
+    border: 1px solid rgba(79,209,255,0.3);
+    border-radius: 999px;
+    transition: background 0.25s ease, color 0.25s ease;
+  }
+  .pill-link:hover{ background: rgba(79,209,255,0.12); }
+
+  /* FOOTER */
+  footer{
+    margin-top: 60px;
+    padding: 40px 24px 50px;
+    text-align: center;
+    border-top: 1px solid var(--border-soft);
+  }
+
+  .footer-brand{
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    margin-bottom: 14px;
+    font-weight: 700;
+    font-family: 'Space Grotesk', sans-serif;
+  }
+
+  footer p{
+    color: var(--text-secondary);
+    font-size: 0.85rem;
+    max-width: 500px;
+    margin: 0 auto 6px;
+  }
+
+  .footer-links{
+    margin-top: 18px;
+    display: flex;
+    gap: 20px;
+    justify-content: center;
+    flex-wrap: wrap;
+  }
+
+  .footer-links a{
+    color: var(--text-secondary);
+    text-decoration: none;
+    font-size: 0.85rem;
+    transition: color 0.25s ease;
+  }
+  .footer-links a:hover{ color: var(--accent); }
+
+  @keyframes fadeUp{
+    from{ opacity: 0; transform: translateY(16px); }
+    to{ opacity: 1; transform: translateY(0); }
+  }
+
+  /* RESPONSIVE */
+  @media (max-width: 768px){
+    .nav-links{
+      position: fixed;
+      top: 68px;
+      left: 0;
+      right: 0;
+      background: rgba(7,11,20,0.97);
+      backdrop-filter: blur(14px);
+      flex-direction: column;
+      gap: 0;
+      border-bottom: 1px solid var(--border-soft);
+      max-height: 0;
+      overflow: hidden;
+      transition: max-height 0.35s ease;
+    }
+    .nav-links.open{ max-height: 300px; }
+    .nav-links li{ width: 100%; }
+    .nav-links a{
+      display: block;
+      padding: 16px 24px;
+      border-bottom: 1px solid var(--border-soft);
+    }
+    .nav-links a::after{ display: none; }
+    .hamburger{ display: flex; }
+
+    .card{ padding: 32px 24px; }
+    .hero{ padding: 70px 20px 50px; }
+  }
+
+  @media (max-width: 480px){
+    .brand span.brand-text{ font-size: 1rem; }
+    .hero-actions{ flex-direction: column; align-items: stretch; }
+    .btn{ justify-content: center; }
+    .card h2{ font-size: 1.3rem; }
+    .meta-row{ flex-direction: column; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <nav>
+    <div class="brand">
+      <div class="brand-icon">J</div>
+      <span class="brand-text">Jarvis</span>
+    </div>
+    <ul class="nav-links" id="navLinks">
+      <li><a href="#about">About</a></li>
+      <li><a href="#privacy">Privacy Policy</a></li>
+      <li><a href="#terms">Terms of Service</a></li>
+      <li><a href="#contact">Contact</a></li>
+    </ul>
+    <button class="hamburger" id="hamburgerBtn" aria-label="Toggle menu">
+      <span></span><span></span><span></span>
+    </button>
+  </nav>
+</header>
+
+<main>
+  <section class="hero">
+    <div class="badge">
+      <span class="badge-dot"></span>
+      Private Application · Single User
+    </div>
+    <h1>Jarvis Personal Assistant</h1>
+    <p>A private, self-hosted automation assistant built by an individual developer for personal, non-commercial use only. Jarvis does not serve the public and does not collect or manage data belonging to anyone other than its creator.</p>
+    <div class="hero-actions">
+      <a href="#privacy" class="btn btn-primary">Read Privacy Policy</a>
+      <a href="#terms" class="btn btn-ghost">Read Terms of Service</a>
+    </div>
+  </section>
+
+  <section class="panel" id="about">
+    <div class="card">
+      <div class="card-icon icon-user">👤</div>
+      <span class="section-tag">About this application</span>
+      <h2>Built by one person, for one person</h2>
+      <div class="divider-line"></div>
+      <p>Jarvis is a personal software project developed and operated solely by <strong>Ramunas</strong>. It was created to automate small personal tasks — such as managing calendars, reminders, and private notes — and is not distributed, marketed, or made available to the general public.</p>
+      <p>There is no sign-up process, no public user base, and no commercial activity associated with this application. Jarvis authenticates exclusively with its creator's own Google account in order to access the specific personal services it was built to assist with.</p>
+      <div class="highlight-box">
+        <span class="dot">i</span>
+        <span>Jarvis is a private-use tool. It is not intended for, and is not accessible by, members of the public.</span>
+      </div>
+    </div>
+  </section>
+
+  <section class="panel" id="data">
+    <div class="card">
+      <div class="card-icon icon-shield">🔒</div>
+      <span class="section-tag">Data handling summary</span>
+      <h2>No public data is collected or managed</h2>
+      <div class="divider-line"></div>
+      <p>Because Jarvis operates as a single-user, private application, it does not collect, store, sell, share, or otherwise manage data belonging to any third party or member of the public. Specifically:</p>
+      <ul>
+        <li>No public registration, login, or account creation is offered to outside users.</li>
+        <li>No data from visitors to this page is collected, logged, or stored.</li>
+        <li>Any Google API access requested by Jarvis is used only to operate the creator's own personal account.</li>
+        <li>No data is sold, rented, or shared with advertisers or third-party marketers.</li>
+      </ul>
+      <div class="anchor-links">
+        <a href="#privacy" class="pill-link">Jump to Privacy Policy →</a>
+        <a href="#terms" class="pill-link">Jump to Terms of Service →</a>
+      </div>
+    </div>
+  </section>
+
+  <section class="panel" id="privacy">
+    <div class="card">
+      <div class="card-icon icon-doc">📄</div>
+      <span class="section-tag">Legal document</span>
+      <h2>Privacy Policy</h2>
+      <div class="divider-line"></div>
+      <p><strong>Effective for:</strong> Jarvis Personal Assistant, a private application developed and used solely by Ramunas.</p>
+      <p>This Privacy Policy exists to satisfy the disclosure requirements of third-party authentication providers (including Google OAuth) for applications requesting API access. As Jarvis is a non-public, single-user application, the following applies:</p>
+      <ul>
+        <li><strong>No collection of public user data:</strong> Jarvis does not collect personal information from any member of the public, as the application has no public users.</li>
+        <li><strong>Sole authorized user:</strong> The only account authenticated with or accessed by this application belongs to its creator, Ramunas.</li>
+        <li><strong>No third-party sharing:</strong> No information processed by Jarvis is shared, sold, licensed, or disclosed to any third party.</li>
+        <li><strong>Limited scope of access:</strong> Any Google API scopes requested are used strictly to power personal automation features (such as calendar or reminder management) for the creator's own account.</li>
+        <li><strong>No analytics or tracking of visitors:</strong> This informational page does not use cookies, trackers, or analytics scripts to monitor visitors.</li>
+        <li><strong>Data retention:</strong> Any data accessed is retained only as needed for the personal functioning of the application and is not archived for any other purpose.</li>
+      </ul>
+      <div class="highlight-box">
+        <span class="dot">i</span>
+        <span>In short: since Jarvis has no public users, there is no public user data for this policy to govern. This page is provided for transparency and compliance purposes only.</span>
+      </div>
+      <div class="meta-row">
+        <span>Document: <strong>Privacy Policy</strong></span>
+        <span>Applies to: <strong>Jarvis Personal Assistant</strong></span>
+        <span>Last reviewed: <strong>2024</strong></span>
+      </div>
+    </div>
+  </section>
+
+  <section class="panel" id="terms">
+    <div class="card">
+      <div class="card-icon icon-info">📜</div>
+      <span class="section-tag">Legal document</span>
+      <h2>Terms of Service</h2>
+      <div class="divider-line"></div>
+      <p><strong>Effective for:</strong> Jarvis Personal Assistant, a private application developed and used solely by Ramunas.</p>
+      <p>These Terms of Service are provided to satisfy third-party platform requirements (including Google OAuth verification) for applications requesting API access. As Jarvis is not offered to the public, the following terms apply:</p>
+      <ul>
+        <li><strong>Private, non-commercial use only:</strong> Jarvis is intended exclusively for personal use by its creator and is not licensed, sold, or made available to any other individual or organization.</li>
+        <li><strong>No public accounts or services:</strong> There are no user registrations, subscriptions, or service agreements offered to the public through this application.</li>
+        <li><strong>No warranties:</strong> Jarvis is provided "as is" for personal experimentation and productivity purposes, with no guarantee of uptime, availability, or fitness for any particular purpose beyond its creator's own use.</li>
+        <li><strong>No liability to third parties:</strong> Because no member of the public uses or interacts with Jarvis as a service, these terms create no obligations toward, or rights for, any third party.</li>
+        <li><strong>Modifications:</strong> The creator may modify, suspend, or discontinue Jarvis at any time without notice, as it is a personal, non-commercial tool.</li>
+        <li><strong>Compliance:</strong> Jarvis's use of any connected API (including Google services) complies with that provider's applicable developer policies and API terms of use.</li>
+      </ul>
+      <div class="highlight-box">
+        <span class="dot">i</span>
+        <span>In short: Jarvis is a private tool with a single authorized user. These terms exist for compliance transparency, not to govern a public service.</span>
+      </div>
+      <div class="meta-row">
+        <span>Document: <strong>Terms of Service</strong></span>
+        <span>Applies to: <strong>Jarvis Personal Assistant</strong></span>
+        <span>Last reviewed: <strong>2024</strong></span>
+      </div>
+    </div>
+  </section>
+
+  <section class="panel" id="contact">
+    <div class="card">
+      <div class="card-icon icon-user">✉️</div>
+      <span class="section-tag">Questions</span>
+      <h2>Contact</h2>
+      <div class="divider-line"></div>
+      <p>This page was published solely to meet OAuth verification and transparency requirements for the private application <strong>Jarvis</strong>. For any questions regarding this application, its privacy practices, or its terms of service, please contact the creator, Ramunas, directly through the developer account associated with this project.</p>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="footer-brand">
+    <div class="brand-icon" style="width:32px;height:32px;font-size:0.9rem;">J</div>
+    <span>Jarvis Personal Assistant</span>
+  </div>
+  <p>A private, single-user application created and maintained by Ramunas. Not a public product or service.</p>
+  <div class="footer-links">
+    <a href="#about">About</a>
+    <a href="#privacy">Privacy Policy</a>
+    <a href="#terms">Terms of Service</a>
+    <a href="#contact">Contact</a>
+  </div>
+  <p style="margin-top:20px; opacity:0.6;">© 2024 Jarvis Personal Assistant. All rights reserved.</p>
+</footer>
+
+<script>
+  const hamburgerBtn = document.getElementById('hamburgerBtn');
+  const navLinks = document.getElementById('navLinks');
+
+  hamburgerBtn.addEventListener('click', () => {
+    hamburgerBtn.classList.toggle('active');
+    navLinks.classList.toggle('open');
+  });
+
+  navLinks.querySelectorAll('a').forEach(link => {
+    link.addEventListener('click', () => {
+      hamburgerBtn.classList.remove('active');
+      navLinks.classList.remove('open');
+    });
+  });
+
+  const observer = new IntersectionObserver((entries) => {
+    entries.forEach(entry => {
+      if(entry.isIntersecting){
+        entry.target.classList.add('visible');
+      }
+    });
+  }, { threshold: 0.12 });
+
+  document.querySelectorAll('.card').forEach(card => observer.observe(card));
+</script>
+
+</body>
+</html>
